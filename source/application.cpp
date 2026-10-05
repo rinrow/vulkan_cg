@@ -27,7 +27,7 @@ struct BoxState {
     glm::vec3 scale    = {1.0f, 1.0f, 1.0f};
 
     // projection
-    bool  use_perspective = true;
+    bool  use_perspective = false;
     float fov_deg  = 60.0f;
     float near_z   = 0.1f;
     float far_z    = 100.0f;
@@ -80,7 +80,7 @@ glm::mat4 buildProjection() {
     } else {
         const float h = g_state.ortho_half_height;
         const float w = h * aspect;
-        return glm::ortho(-w, w, -h, h, g_state.near_z, g_state.far_z);
+        return glm::ortho(-w, w, -h, h, -100.f, 100.f);
     }
 }
 
@@ -142,10 +142,10 @@ void update([[maybe_unused]] double time) {
     ImGui::SliderFloat3("Rotation (deg)", &g_state.rotation.x, -180.0f, 180.0f);
     ImGui::SliderFloat3("Scale", &g_state.scale.x, 0.1f, 5.0f);
 
-    int use_presp = g_state.use_perspective;
+    int* use_presp = (int*)(&g_state.use_perspective);
     ImGui::SeparatorText("Projection");
-    ImGui::RadioButton("Perspective", &use_presp, 1); ImGui::SameLine();
-    ImGui::RadioButton("Orthographic", &use_presp, 0);
+    ImGui::RadioButton("Perspective", use_presp, 1); ImGui::SameLine();
+    ImGui::RadioButton("Orthographic", use_presp, 0);
 
     if (g_state.use_perspective) {
         ImGui::SliderFloat("FOV (deg)", &g_state.fov_deg, 10.0f, 120.0f);
