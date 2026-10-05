@@ -3,7 +3,11 @@ include(FetchContent)
 
 project(vulkan-starter-app LANGUAGES C CXX)
 
-add_executable(${PROJECT_NAME} source/main.cpp source/graphics_internal.cpp source/application.cpp)
+add_executable(${PROJECT_NAME} 
+	source/main.cpp 
+	source/graphics_internal.cpp 
+	source/application.cpp 
+	source/graphics.cpp)
 
 if(LINUX)
 	target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
@@ -55,11 +59,23 @@ set(GLFW_BUILD_EXAMPLES OFF)
 set(GLFW_BUILD_TESTS OFF)
 set(GLFW_BUILD_DOCS OFF)
 
+FetchContent_Declare(
+    glm
+    GIT_REPOSITORY https://github.com/g-truc/glm.git
+    GIT_TAG 1.0.1
+)
+
+# set(GLM_BUILD_LIBRARY OFF CACHE BOOL "" FORCE)
+# set(GLM_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
+# set(GLM_BUILD_INSTALL OFF CACHE BOOL "" FORCE)
+# set(GLM_ENABLE_CXX_20 ON  CACHE BOOL "" FORCE)
+
 FetchContent_MakeAvailable(
 	glfw
 	vk-bootstrap
 	VulkanMemoryAllocator
 	imgui
+	glm
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -67,6 +83,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 	Vulkan::Vulkan
 	vk-bootstrap::vk-bootstrap
 	GPUOpen::VulkanMemoryAllocator
+	glm::glm
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
@@ -103,8 +120,8 @@ if(GLSLC_FOUND)
 	# To compile shader file, use compile_shader function with a file name
 	# of a shader inside shaders directory. See example below:
 
-	# compile_shader(example.vert)
-	# compile_shader(example.frag)
+	compile_shader(cube.vert)
+	compile_shader(cube.frag)
 
 	add_custom_target(shaders DEPENDS ${_SHADER_BINARIES})
 	add_dependencies(${PROJECT_NAME} shaders)
