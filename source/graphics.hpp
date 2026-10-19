@@ -6,6 +6,7 @@
 
 #include <vulkan/vulkan_core.h>
 #include <vk_mem_alloc.h>
+#define GLM_ENABLE_EXPERIMENTAL
 
 #include <glm/glm.hpp>
 
@@ -28,6 +29,55 @@ struct Buffer {
     void upload(const void* data, VkDeviceSize size);
 };
 
+// Один источник света. Для начала — направленный.
+struct alignas(16) Light {
+    alignas(16) glm::vec4 position_or_dir;  // .xyz — позиция (для point/spot), .w = тип
+    alignas(16) glm::vec4 direction;        // .xyz — направление (для spot), .w = unused
+    alignas(16) glm::vec4 color;            // .rgb — цвет * интенсивность
+    alignas(16) glm::vec4 params;           // .x=radius, .y=inner_cos, .z=outer_cos
+};
+
+// Один источник света. Для начала — направленный.
+struct alignas(16) SceneUBO {
+    alignas(16) glm::mat4 view;
+    alignas(16) glm::mat4 proj;
+    alignas(16) glm::vec4 camera_pos;
+    alignas(16) glm::vec4 ambient_color;
+    alignas(16) glm::ivec4 light_counts;  // .x = dir, .y = point, .z = spot, .w = unused
+};
+
+// // UBO — общие параметры, одинаковые для всех объектов
+// struct alignas(16) SceneUBO {
+//     alignas(16) glm::mat4 view;
+//     alignas(16) glm::mat4 proj;
+//     alignas(16) glm::vec4 camera_pos;     // .xyz
+//     alignas(16) glm::vec4 light_dir;      // .xyz — направленный свет
+//     alignas(16) glm::vec4 light_color;    // .rgb
+//     alignas(16) glm::vec4 ambient_color;  // .rgb
+// };
+
+struct alignas(16) ModelUBO {
+    alignas(16) glm::mat4 model;
+    alignas(16) glm::vec4 albedo;         // .rgb
+    alignas(16) glm::vec4 specular_color; // .rgb
+    alignas(16) glm::vec4 params;         // .x = shininess
+};
+
+struct DescriptorSet {
+    VkDescriptorSetLayout scene_layout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout model_layout = VK_NULL_HANDLE;
+
+    VkDescriptorPool      pool = VK_NULL_HANDLE;
+    VkDescriptorSet       scene_set = VK_NULL_HANDLE;
+    VkDescriptorSet       model_set = VK_NULL_HANDLE;
+
+    static DescriptorSet create();           // создаёт оба layout'а + pool + 2 set'а
+    void destroy();
+    void updateScene(VkBuffer ubo, VkDeviceSize ubo_size,
+                    VkBuffer ssbo, VkDeviceSize ssbo_size);
+    void updateModel(VkBuffer ubo, VkDeviceSize ubo_size);
+};
+
 // ---------- Загрузка SPIR-V ----------
 std::vector<uint32_t> loadShader(const std::string& path);
 VkShaderModule createShaderModule(const std::vector<uint32_t>& code);
@@ -44,10 +94,10 @@ struct Pipeline {
     // attribute_descriptions — описание атрибутов (position, color, ...).
     // push_constant_size — размер push constant блока (0 если не нужен).
     static Pipeline create(const std::vector<uint32_t>& vert_spv,
-                           const std::vector<uint32_t>& frag_spv,
-                           uint32_t vertex_stride,
-                           const std::vector<VkVertexInputAttributeDescription>& attributes,
-                           uint32_t push_constant_size);
+                       const std::vector<uint32_t>& frag_spv,
+                       uint32_t vertex_stride,
+                       const std::vector<VkVertexInputAttributeDescription>& attributes,
+                       const std::vector<VkDescriptorSetLayout>& layouts);
 
     void destroy();
 };
@@ -72,10 +122,25 @@ struct Mesh {
 struct Vertex {
     glm::vec3 position;
     glm::vec3 color;
+    glm::vec3 normal;
+};
+
+// Параметры процедурного окрашивания вершин
+struct ColorParams {
+    glm::vec3 weight_r = {1.0f, 0.0f, 0.0f};
+    glm::vec3 weight_g = {0.0f, 1.0f, 0.0f};
+    glm::vec3 weight_b = {0.0f, 0.0f, 1.0f};
+    glm::vec3 base     = {0.0f, 0.0f, 0.0f};
+    float     gamma    = 1.0f;
+
+    // 0 = линейный градиент, 1 = HSV по углу, 2 = шахматка
+    int mode = 0;
+
+    glm::vec3 tint = {1.0f, 1.0f, 1.0f};  // цвет от ColorEdit, умножается на процедурный
 };
 
 // Создаёт параллелепипед с размерами (sx, sy, sz), центрированный в начале координат.
 // 6 граней * 4 вершины = 24 вершины, 36 индексов.
-Mesh createBox(float sx, float sy, float sz);
+Mesh createBox(float sx, float sy, float sz, ColorParams& colors);
 
 } // namespace graphics

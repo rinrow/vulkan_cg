@@ -1,15 +1,42 @@
+
+#define GLM_ENABLE_EXPERIMENTAL
 #include "graphics.hpp"
+#include <glm/gtc/constants.hpp>
 
 #include <cstring>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <array>
 
 #include "graphics_internal.hpp"
 
 namespace graphics {
 
 using graphics::internal::context;
+
+namespace {
+glm::vec3 hsv2rgb(float h, float s, float v) {
+    const float h6 = h * 6.0f;
+    const int   i  = int(h6);
+    const float f  = h6 - float(i);
+    const float p  = v * (1.0f - s);
+    const float q  = v * (1.0f - s * f);
+    const float t  = v * (1.0f - s * (1.0f - f));
+
+    switch (i % 6) {
+        case 0: return {v, t, p};
+        case 1: return {q, v, p};
+        case 2: return {p, v, t};
+        case 3: return {p, q, v};
+        case 4: return {t, p, v};
+        default: return {v, p, q};
+    }
+}
+}
+
+// ... evalColor идёт ниже ...
 
 // ============================================================
 // Buffer
@@ -114,7 +141,7 @@ Pipeline Pipeline::create(const std::vector<uint32_t>& vert_spv,
                           const std::vector<uint32_t>& frag_spv,
                           uint32_t vertex_stride,
                           const std::vector<VkVertexInputAttributeDescription>& attributes,
-                          uint32_t push_constant_size) {
+                          const std::vector<VkDescriptorSetLayout>& layouts) {
     Pipeline p;
 
     VkShaderModule vert_module = createShaderModule(vert_spv);
@@ -208,16 +235,10 @@ Pipeline Pipeline::create(const std::vector<uint32_t>& vert_spv,
         .pDynamicStates = dynamic_states,
     };
 
-    const VkPushConstantRange push_range = {
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-        .offset = 0,
-        .size = push_constant_size,
-    };
-
     const VkPipelineLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .pushConstantRangeCount = push_constant_size > 0 ? 1u : 0u,
-        .pPushConstantRanges = push_constant_size > 0 ? &push_range : nullptr,
+        .setLayoutCount = uint32_t(layouts.size()),
+        .pSetLayouts = layouts.data(),
     };
 
     if (vkCreatePipelineLayout(context.device, &layout_info, nullptr, &p.layout) != VK_SUCCESS) {
@@ -299,56 +320,219 @@ void Mesh::draw(VkCommandBuffer cmd) const {
     vkCmdDrawIndexed(cmd, index_count, 1, 0, 0, 0);
 }
 
+namespace {
+glm::vec3 evalColor(const glm::vec3& local_pos, const glm::vec3& half_size,
+                    const ColorParams& p) {
+    // Нормализуем локальную позицию в [0,1]
+    const glm::vec3 uvw = {
+        (local_pos.x + half_size.x) / (2.0f * half_size.x),
+        (local_pos.y + half_size.y) / (2.0f * half_size.y),
+        (local_pos.z + half_size.z) / (2.0f * half_size.z),
+    };
+
+    glm::vec3 c;
+
+    if (p.mode == 0) {
+        // Линейный градиент: канал = скалярное произведение (u,v,w) с весом
+        c.r = glm::dot(uvw, p.weight_r) + p.base.r;
+        c.g = glm::dot(uvw, p.weight_g) + p.base.g;
+        c.b = glm::dot(uvw, p.weight_b) + p.base.b;
+    } else if (p.mode == 1) {
+        // HSV: угол вокруг оси Y → оттенок, Y → яркость
+        const float angle = std::atan2(local_pos.z, local_pos.x);
+        const float hue   = (angle + glm::pi<float>()) / (2.0f * glm::pi<float>());
+        const float sat   = 0.9f;
+        const float val   = 0.4f + 0.6f * uvw.y;
+        c = hsv2rgb(hue, sat, val);
+    } else {
+        // Шахматка: чётность ячейки по u,v,w
+        const int cell = int(std::floor(uvw.x * 4.0f)) +
+                         int(std::floor(uvw.y * 4.0f)) +
+                         int(std::floor(uvw.z * 4.0f));
+        const float k = (cell & 1) ? 1.0f : 0.3f;
+        c = glm::vec3(0.9f, 0.6f, 0.3f) * k;
+    }
+
+    c *= p.tint;
+
+    // Clamp + гамма
+    c = glm::clamp(c, glm::vec3(0.0f), glm::vec3(1.0f));
+    if (p.gamma != 1.0f) {
+        c = glm::pow(c, glm::vec3(1.0f / p.gamma));
+    }
+    return c;
+}
+}
+
 // ============================================================
 // Параллелепипед
 // ============================================================
 
-Mesh createBox(float sx, float sy, float sz) {
+Mesh createBox(float sx, float sy, float sz, ColorParams& colors) {
     const float hx = sx * 0.5f;
     const float hy = sy * 0.5f;
     const float hz = sz * 0.5f;
+    const glm::vec3 half = {hx, hy, hz};
 
-    // Цвета граней (для наглядности разные).
-    const glm::vec3 c_front  = {0.90f, 0.30f, 0.30f}; // +Z  красная
-    const glm::vec3 c_back   = {0.30f, 0.90f, 0.30f}; // -Z  зелёная
-    const glm::vec3 c_top    = {0.30f, 0.50f, 0.95f}; // +Y  синяя
-    const glm::vec3 c_bottom = {0.95f, 0.85f, 0.25f}; // -Y  жёлтая
-    const glm::vec3 c_right  = {0.85f, 0.35f, 0.90f}; // +X  фиолетовая
-    const glm::vec3 c_left   = {0.25f, 0.85f, 0.90f}; // -X  голубая
-
-    // 24 вершины (по 4 на грань). Порядок: CCW при взгляде снаружи.
-    const Vertex verts[] = {
+    // Локальные позиции 24 вершин (по 4 на грань)
+    const glm::vec3 local[24] = {
         // Front (+Z)
-        {{-hx, -hy,  hz}, c_front}, {{ hx, -hy,  hz}, c_front},
-        {{ hx,  hy,  hz}, c_front}, {{-hx,  hy,  hz}, c_front},
+        {-hx, -hy,  hz}, { hx, -hy,  hz}, { hx,  hy,  hz}, {-hx,  hy,  hz},
         // Back (-Z)
-        {{ hx, -hy, -hz}, c_back},  {{-hx, -hy, -hz}, c_back},
-        {{-hx,  hy, -hz}, c_back},  {{ hx,  hy, -hz}, c_back},
+        { hx, -hy, -hz}, {-hx, -hy, -hz}, {-hx,  hy, -hz}, { hx,  hy, -hz},
         // Top (+Y)
-        {{-hx,  hy,  hz}, c_top},   {{ hx,  hy,  hz}, c_top},
-        {{ hx,  hy, -hz}, c_top},   {{-hx,  hy, -hz}, c_top},
+        {-hx,  hy,  hz}, { hx,  hy,  hz}, { hx,  hy, -hz}, {-hx,  hy, -hz},
         // Bottom (-Y)
-        {{-hx, -hy, -hz}, c_bottom},{{ hx, -hy, -hz}, c_bottom},
-        {{ hx, -hy,  hz}, c_bottom},{{-hx, -hy,  hz}, c_bottom},
+        {-hx, -hy, -hz}, { hx, -hy, -hz}, { hx, -hy,  hz}, {-hx, -hy,  hz},
         // Right (+X)
-        {{ hx, -hy,  hz}, c_right}, {{ hx, -hy, -hz}, c_right},
-        {{ hx,  hy, -hz}, c_right}, {{ hx,  hy,  hz}, c_right},
+        { hx, -hy,  hz}, { hx, -hy, -hz}, { hx,  hy, -hz}, { hx,  hy,  hz},
         // Left (-X)
-        {{-hx, -hy, -hz}, c_left},  {{-hx, -hy,  hz}, c_left},
-        {{-hx,  hy,  hz}, c_left},  {{-hx,  hy, -hz}, c_left},
+        {-hx, -hy, -hz}, {-hx, -hy,  hz}, {-hx,  hy,  hz}, {-hx,  hy, -hz},
+    };
+    
+    // Нормали по граням: front, back, top, bottom, right, left
+    const glm::vec3 face_normals[6] = {
+        { 0,  0,  1},   // front  (+Z)
+        { 0,  0, -1},   // back   (-Z)
+        { 0,  1,  0},   // top    (+Y)
+        { 0, -1,  0},   // bottom (-Y)
+        { 1,  0,  0},   // right  (+X)
+        {-1,  0,  0},   // left   (-X)
     };
 
+    Vertex verts[24];
+    for (int face = 0; face < 6; ++face) {
+        const glm::vec3 n = face_normals[face];
+        for (int v = 0; v < 4; ++v) {
+            const int i = face * 4 + v;
+            verts[i].position = local[i];
+            verts[i].color    = evalColor(local[i], half, colors);
+            verts[i].normal   = n;
+        }
+    }
+
     const uint16_t idx[] = {
-         0,  1,  2,   2,  3,  0, // front
-         4,  5,  6,   6,  7,  4, // back
-         8,  9, 10,  10, 11,  8, // top
-        12, 13, 14,  14, 15, 12, // bottom
-        16, 17, 18,  18, 19, 16, // right
-        20, 21, 22,  22, 23, 20, // left
+         0,  1,  2,   2,  3,  0,
+         4,  5,  6,   6,  7,  4,
+         8,  9, 10,  10, 11,  8,
+        12, 13, 14,  14, 15, 12,
+        16, 17, 18,  18, 19, 16,
+        20, 21, 22,  22, 23, 20,
     };
 
     return Mesh::create(verts, sizeof(verts), idx, sizeof(idx),
                         uint32_t(sizeof(idx) / sizeof(idx[0])));
+}
+DescriptorSet DescriptorSet::create() {
+    DescriptorSet d;
+
+    // Scene: UBO на binding 0, SSBO на binding 1
+    const VkDescriptorSetLayoutBinding scene_bindings[2] = {
+        {
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+    };
+    const VkDescriptorSetLayoutCreateInfo scene_layout_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 2,
+        .pBindings = scene_bindings,
+    };
+    vkCreateDescriptorSetLayout(context.device, &scene_layout_info, nullptr, &d.scene_layout);
+
+    // Model: UBO на binding 0
+    const VkDescriptorSetLayoutBinding model_binding = {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    const VkDescriptorSetLayoutCreateInfo model_layout_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &model_binding,
+    };
+    vkCreateDescriptorSetLayout(context.device, &model_layout_info, nullptr, &d.model_layout);
+
+    // Pool: 2 UBO + 1 SSBO
+    const VkDescriptorPoolSize pool_sizes[2] = {
+        { .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 2 },
+        { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1 },
+    };
+    const VkDescriptorPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = 2,
+        .poolSizeCount = 2,
+        .pPoolSizes = pool_sizes,
+    };
+    vkCreateDescriptorPool(context.device, &pool_info, nullptr, &d.pool);
+
+    // Sets
+    const VkDescriptorSetLayout layouts[2] = { d.scene_layout, d.model_layout };
+    const VkDescriptorSetAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = d.pool,
+        .descriptorSetCount = 2,
+        .pSetLayouts = layouts,
+    };
+    VkDescriptorSet sets[2];
+    vkAllocateDescriptorSets(context.device, &alloc_info, sets);
+    d.scene_set = sets[0];
+    d.model_set = sets[1];
+
+    return d;
+}
+void DescriptorSet::updateScene(VkBuffer ubo, VkDeviceSize ubo_size,
+                                VkBuffer ssbo, VkDeviceSize ssbo_size) {
+    const VkDescriptorBufferInfo ubo_info = { ubo, 0, ubo_size };
+    const VkDescriptorBufferInfo ssbo_info = { ssbo, 0, ssbo_size };
+
+    const VkWriteDescriptorSet writes[2] = {
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = scene_set,
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .pBufferInfo = &ubo_info,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = scene_set,
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pBufferInfo = &ssbo_info,
+        },
+    };
+    vkUpdateDescriptorSets(context.device, 2, writes, 0, nullptr);
+}
+
+void DescriptorSet::updateModel(VkBuffer buffer, VkDeviceSize size) {
+    const VkDescriptorBufferInfo info = { buffer, 0, size };
+    const VkWriteDescriptorSet write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = model_set,
+        .dstBinding = 0,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .pBufferInfo = &info,
+    };
+    vkUpdateDescriptorSets(context.device, 1, &write, 0, nullptr);
+}
+
+void DescriptorSet::destroy() {
+    if (pool) { vkDestroyDescriptorPool(context.device, pool, nullptr); pool = VK_NULL_HANDLE; scene_set = VK_NULL_HANDLE; model_set = VK_NULL_HANDLE; }
+    if (scene_layout) { vkDestroyDescriptorSetLayout(context.device, scene_layout, nullptr); scene_layout = VK_NULL_HANDLE; }
+    if (model_layout) { vkDestroyDescriptorSetLayout(context.device, model_layout, nullptr); model_layout = VK_NULL_HANDLE; }
 }
 
 } // namespace graphics
