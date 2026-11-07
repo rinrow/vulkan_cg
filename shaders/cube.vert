@@ -3,6 +3,7 @@
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_color;
 layout(location = 2) in vec3 in_normal;
+layout(location = 3) in vec2 in_uv;
 
 layout(set = 0, binding = 0) uniform SceneUBO {
     mat4 view;
@@ -22,6 +23,7 @@ layout(set = 1, binding = 0) uniform ModelUBO {
 layout(location = 0) out vec3 frag_color;
 layout(location = 1) out vec3 frag_normal;
 layout(location = 2) out vec3 frag_world_pos;
+layout(location = 3) out vec2 frag_uv;
 
 void main() {
     vec4 world = model_ubo.model * vec4(in_position, 1.0);
@@ -29,4 +31,5 @@ void main() {
     frag_color     = in_color;
     frag_normal    = mat3(transpose(inverse(model_ubo.model))) * in_normal;
     frag_world_pos = world.xyz;
+    frag_uv = in_uv;
 }

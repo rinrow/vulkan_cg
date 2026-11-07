@@ -12,6 +12,17 @@
 
 namespace graphics {
 
+struct Texture {
+    VkImage        image      = VK_NULL_HANDLE;
+    VmaAllocation  allocation = VK_NULL_HANDLE;
+    VkImageView    view       = VK_NULL_HANDLE;
+    VkSampler      sampler    = VK_NULL_HANDLE;
+    std::string    name;
+
+    static Texture loadFromFile(const std::string& path);
+    void destroy();
+};
+
 // ---------- Буфер (vertex/index/uniform) через VMA ----------
 struct Buffer {
     VkBuffer        buffer = VK_NULL_HANDLE;
@@ -21,6 +32,10 @@ struct Buffer {
     // Создать буфер с заданными данными. usage — например
     // VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT.
     static Buffer create(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
+
+    static Buffer createDeviceLocal(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
+    static Buffer createDeviceLocalEmpty(VkDeviceSize size, VkBufferUsageFlags usage);
+
 
     // Уничтожить (вызвать из shutdown).
     void destroy();
@@ -58,9 +73,13 @@ struct alignas(16) SceneUBO {
 
 struct alignas(16) ModelUBO {
     alignas(16) glm::mat4 model;
-    alignas(16) glm::vec4 albedo;         // .rgb
-    alignas(16) glm::vec4 specular_color; // .rgb
-    alignas(16) glm::vec4 params;         // .x = shininess
+    alignas(16) glm::vec4 albedo;
+    alignas(16) glm::vec4 specular_color;
+    alignas(16) glm::vec4 params;      // .x = shininess
+    alignas(16) glm::vec4 flags;       // .x = sampler_mode (пока 0)
+    alignas(16) glm::vec4 texture_index; // .x = индекс текстуры (пока 0)
+    // padding до 256 байт:
+    alignas(16) glm::vec4 _pad[7];
 };
 
 struct DescriptorSet {
@@ -71,17 +90,20 @@ struct DescriptorSet {
     VkDescriptorSet       scene_set = VK_NULL_HANDLE;
     VkDescriptorSet       model_set = VK_NULL_HANDLE;
 
-    static DescriptorSet create();           // создаёт оба layout'а + pool + 2 set'а
+    static DescriptorSet create();
     void destroy();
     void updateScene(VkBuffer ubo, VkDeviceSize ubo_size,
-                    VkBuffer ssbo, VkDeviceSize ssbo_size);
-    void updateModel(VkBuffer ubo, VkDeviceSize ubo_size);
+                     VkBuffer ssbo, VkDeviceSize ssbo_size);
+    void updateModel(VkBuffer buffer, VkDeviceSize size,
+                     VkImageView image, VkSampler sampler);
 };
 
 // ---------- Загрузка SPIR-V ----------
 std::vector<uint32_t> loadShader(const std::string& path);
 VkShaderModule createShaderModule(const std::vector<uint32_t>& code);
 void destroyShaderModule(VkShaderModule module);
+void uploadToDeviceLocal(Buffer& dst, const void* data, VkDeviceSize size);
+
 
 // ---------- Графический конвейер ----------
 struct Pipeline {
@@ -123,6 +145,7 @@ struct Vertex {
     glm::vec3 position;
     glm::vec3 color;
     glm::vec3 normal;
+    glm::vec2 uv;
 };
 
 // Параметры процедурного окрашивания вершин

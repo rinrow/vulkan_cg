@@ -3,6 +3,7 @@
 layout(location = 0) in vec3 frag_color;
 layout(location = 1) in vec3 frag_normal;
 layout(location = 2) in vec3 frag_world_pos;
+layout(location = 3) in vec2 frag_uv;
 
 layout(location = 0) out vec4 out_color;
 
@@ -30,13 +31,18 @@ layout(set = 1, binding = 0) uniform ModelUBO {
     vec4 albedo;
     vec4 specular_color;
     vec4 params;
+    vec4 flags;
+    vec4 texture_index;
+    vec4 _pad[7];
 } model_ubo;
+
+layout(set = 1, binding = 1) uniform sampler2D tex_albedo;
 
 void main() {
     vec3 N = normalize(frag_normal);
     vec3 V = normalize(scene.camera_pos.xyz - frag_world_pos);
-    vec3 base = frag_color * model_ubo.albedo.rgb;
-
+    vec3 tex_color = texture(tex_albedo, frag_uv).rgb;
+    vec3 base = tex_color * frag_color * model_ubo.albedo.rgb;
     vec3 result = scene.ambient_color.rgb * base;
 
     int dir_count   = scene.light_counts.x;

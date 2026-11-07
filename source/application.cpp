@@ -32,7 +32,7 @@ struct BoxState {
     glm::vec3 scale    = {1.0f, 1.0f, 1.0f};
 
     // projection
-    bool  use_perspective = false;
+    bool  use_perspective = true;
     float fov_deg  = 60.0f;
     float near_z   = 0.1f;
     float far_z    = 100.0f;
@@ -110,6 +110,8 @@ graphics::Buffer            g_scene_ubo;
 graphics::Buffer            g_model_ubo;
 graphics::Buffer            g_light_ssbo;
 static constexpr uint32_t   MAX_LIGHTS = 16;
+std::vector<graphics::Texture> g_textures;
+int g_current_texture = 0;
 
 // Пересобирает меш, если пользователь поменял размеры.
 void rebuildMeshIfNeeded() {
@@ -165,8 +167,14 @@ glm::mat4 buildView() {
 glm::mat4 buildProjection() {
     const float aspect = float(context.swapchain_extent.width) /
                          float(context.swapchain_extent.height);
-    return glm::perspective(glm::radians(g_state.camera_fov), aspect,
-                            g_state.camera_near, g_state.camera_far);
+    if (g_state.use_perspective) {
+        return glm::perspective(glm::radians(g_state.camera_fov), aspect,
+                                g_state.camera_near, g_state.camera_far);
+    } else {
+        const float h = g_state.ortho_half_height;
+        const float w = h * aspect;
+        return glm::ortho(-w, w, -h, h, -100.0f, 100.0f);
+    }
 }
 
 } // namespace
@@ -190,21 +198,28 @@ bool initialize() {
         { .location = 2, .binding = 0, 
             .format = VK_FORMAT_R32G32B32_SFLOAT,
         .offset = offsetof(graphics::Vertex, normal) },
+        { .location = 3, .binding = 0,
+            .format = VK_FORMAT_R32G32_SFLOAT,
+            .offset = offsetof(graphics::Vertex, uv) },
     };
 
     // --- Pipeline с push constant под mat4 (64 байта) ---
     // 1. Создаём UBO-буфер и descriptor set
     g_scene_ubo = graphics::Buffer::create(nullptr, sizeof(graphics::SceneUBO),
                                         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-    g_model_ubo = graphics::Buffer::create(nullptr, sizeof(graphics::ModelUBO),
-                                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    
+    static constexpr uint32_t MAX_OBJECTS = 16;
+    g_model_ubo = graphics::Buffer::create(nullptr, sizeof(graphics::ModelUBO) * MAX_OBJECTS,
+                                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
     g_light_ssbo = graphics::Buffer::create(nullptr, sizeof(graphics::Light) * MAX_LIGHTS,
                                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    g_textures.push_back(graphics::Texture::loadFromFile("textures/test.png"));
+    g_textures.push_back(graphics::Texture::loadFromFile("textures/test2.png"));
 
     g_descriptor_set = graphics::DescriptorSet::create();
     g_descriptor_set.updateScene(g_scene_ubo.buffer, sizeof(graphics::SceneUBO),
                                 g_light_ssbo.buffer, sizeof(graphics::Light) * MAX_LIGHTS);
-    g_descriptor_set.updateModel(g_model_ubo.buffer, sizeof(graphics::ModelUBO));
+    g_descriptor_set.updateModel(g_model_ubo.buffer, sizeof(graphics::ModelUBO), g_textures[0].view, g_textures[0].sampler);
 
     g_state.point_lights.push_back({glm::vec3(2, 2, 2), glm::vec3(1, 0.5, 0.5), 5.0f, 5.0f});
     g_state.point_lights.push_back({glm::vec3(-2, 2, 0), glm::vec3(0.5, 0.5, 1), 5.0f, 5.0f});
@@ -229,6 +244,7 @@ bool initialize() {
     // --- Меш ---
     g_mesh = graphics::createBox(g_state.size_x, g_state.size_y, g_state.size_z, g_state.color_params);
 
+
     return true;
 }
 
@@ -242,6 +258,7 @@ void shutdown() {
     g_mesh.destroy();
     g_pipeline.destroy();
     g_light_ssbo.destroy();
+    for (auto& t: g_textures) t.destroy();
 }
 
 void update([[maybe_unused]] double time) {
@@ -430,6 +447,14 @@ void update([[maybe_unused]] double time) {
         ImGui::PopID();
     }
 
+    ImGui::SeparatorText("Texture");
+    const char* tex_names[] = { "test.png", "test2.png" };
+    if (ImGui::Combo("Active", &g_current_texture, tex_names, 2)) {
+        g_descriptor_set.updateModel(g_model_ubo.buffer, sizeof(graphics::ModelUBO),
+                                    g_textures[g_current_texture].view,
+                                    g_textures[g_current_texture].sampler);
+    }
+    
     ImGui::Separator();
     ImGui::End();
 
@@ -520,21 +545,24 @@ void render(const graphics::internal::FrameData& fd) {
     scene.light_counts = glm::ivec4(dir_count, point_count, spot_count, 0);
     g_scene_ubo.upload(&scene, sizeof(scene));
 
-    // Model UBO — как было
 
-    graphics::ModelUBO model{};
-    model.model          = buildModel();
-    model.albedo         = glm::vec4(g_state.albedo, 1.0f);
-    model.specular_color = glm::vec4(g_state.specular_color, 1.0f);
-    model.params         = glm::vec4(g_state.shininess, 0, 0, 0);
-    g_model_ubo.upload(&model, sizeof(model));
+    graphics::ModelUBO model_data{};
+    model_data.model          = buildModel();
+    model_data.albedo         = glm::vec4(g_state.albedo, 1.0f);
+    model_data.specular_color = glm::vec4(g_state.specular_color, 1.0f);
+    model_data.params         = glm::vec4(g_state.shininess, 0, 0, 0);
+    model_data.flags          = glm::vec4(0, 0, 0, 0);
+    model_data.texture_index  = glm::vec4(0, 0, 0, 0);
+
+    // Записываем в смещение 0
+    g_model_ubo.upload(&model_data, sizeof(graphics::ModelUBO));
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeline.pipeline);
 
     const VkDescriptorSet sets[] = { g_descriptor_set.scene_set, g_descriptor_set.model_set };
+    const uint32_t dynamic_offsets[] = { 0 };   // только для Set 1
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            g_pipeline.layout, 0, 2, sets, 0, nullptr);
-
+                        g_pipeline.layout, 0, 2, sets, 1, dynamic_offsets);
     g_mesh.bind(cmd);
     g_mesh.draw(cmd);
 

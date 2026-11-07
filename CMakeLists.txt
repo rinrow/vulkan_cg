@@ -7,7 +7,9 @@ add_executable(${PROJECT_NAME}
 	source/main.cpp 
 	source/graphics_internal.cpp 
 	source/application.cpp 
-	source/graphics.cpp)
+	source/graphics.cpp
+	source/stb_impl.cpp
+)
 
 if(LINUX)
 	target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
@@ -52,6 +54,12 @@ FetchContent_Declare(
 	GIT_TAG v1.92.9
 )
 
+FetchContent_Declare(
+    stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG master
+)
+
 find_package(Vulkan REQUIRED)
 
 set(GLFW_LIBRARY_TYPE STATIC)
@@ -76,6 +84,7 @@ FetchContent_MakeAvailable(
 	VulkanMemoryAllocator
 	imgui
 	glm
+	stb
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -96,6 +105,8 @@ target_sources(${PROJECT_NAME} PRIVATE
 	${imgui_SOURCE_DIR}/imgui_widgets.cpp
 	${imgui_SOURCE_DIR}/imgui_demo.cpp
 )
+
+target_include_directories(${PROJECT_NAME} PRIVATE ${stb_SOURCE_DIR})
 
 # Compile shaders
 find_program(GLSLC_FOUND glslc)
